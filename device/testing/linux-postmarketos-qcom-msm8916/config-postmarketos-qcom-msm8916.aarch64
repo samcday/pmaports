@@ -1708,7 +1708,7 @@ CONFIG_BLK_DEV_NBD=m
 # CONFIG_ATA_OVER_ETH is not set
 # CONFIG_VIRTIO_BLK is not set
 # CONFIG_BLK_DEV_RBD is not set
-# CONFIG_BLK_DEV_UBLK is not set
+CONFIG_BLK_DEV_UBLK=m
 
 #
 # NVME Support
