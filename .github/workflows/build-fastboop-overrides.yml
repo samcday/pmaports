@@ -73,28 +73,46 @@ jobs:
 
           cp -f "${files[@]}" out/aarch64/
 
-          sample_apk="${files[0]}"
           tmp_keys_dir="$(mktemp -d)"
-          signing_key_pub=""
+          matching_keys=()
 
           for key in "$PMB_WORK"/config_apk_keys/*.pub; do
             rm -f "${tmp_keys_dir}"/*.pub
             cp "${key}" "${tmp_keys_dir}/"
 
-            if "$PMB_WORK"/apk.static --keys-dir "${tmp_keys_dir}" verify "${sample_apk}" >/dev/null 2>&1; then
-              signing_key_pub="${key}"
+            for apk in "${files[@]}"; do
+              if "$PMB_WORK"/apk.static --keys-dir "${tmp_keys_dir}" verify "${apk}" >/dev/null 2>&1; then
+                matching_keys+=("${key}")
+                break
+              fi
+            done
+          done
+
+          if [ "${#matching_keys[@]}" -eq 0 ]; then
+            echo "Failed to determine package signing key(s)"
+            rm -rf "${tmp_keys_dir}"
+            exit 1
+          fi
+
+          for key in "${matching_keys[@]}"; do
+            cp -f "${key}" out/aarch64/
+          done
+
+          primary_key=""
+          for key in "${matching_keys[@]}"; do
+            if [[ "$(basename "${key}")" == pmos@local-* ]]; then
+              primary_key="${key}"
               break
             fi
           done
 
-          rm -rf "${tmp_keys_dir}"
-
-          if [ -z "${signing_key_pub}" ]; then
-            echo "Failed to determine signing key for ${sample_apk}"
-            exit 1
+          if [ -z "${primary_key}" ]; then
+            primary_key="${matching_keys[0]}"
           fi
 
-          cp -f "${signing_key_pub}" out/aarch64/pmaports-fastboop.rsa.pub
+          rm -rf "${tmp_keys_dir}"
+
+          cp -f "${primary_key}" out/aarch64/pmaports-fastboop.rsa.pub
           ls -lh out/aarch64/
 
       - name: Upload APK artifacts

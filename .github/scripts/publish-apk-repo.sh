@@ -28,9 +28,14 @@ fi
 
 shopt -s nullglob
 apk_files=("${SRC_DIR}"/*.apk)
-src_pub_key="${SRC_DIR}/pmaports-fastboop.rsa.pub"
+src_pub_keys=("${SRC_DIR}"/*.pub)
 if [ "${#apk_files[@]}" -eq 0 ]; then
   echo "No APK files found in ${SRC_DIR}"
+  exit 1
+fi
+
+if [ "${#src_pub_keys[@]}" -eq 0 ]; then
+  echo "No .pub key files found in ${SRC_DIR}"
   exit 1
 fi
 
@@ -47,6 +52,7 @@ git checkout -B "${APK_REPO_BRANCH}"
 
 mkdir -p aarch64
 dst_apk_files=(aarch64/*.apk)
+dst_pub_keys=(./*.pub)
 
 unchanged=true
 if [ "${#dst_apk_files[@]}" -ne "${#apk_files[@]}" ]; then
@@ -61,10 +67,16 @@ else
   done
 fi
 
-if [ -f "${src_pub_key}" ]; then
-  if [ ! -f "pmaports-fastboop.rsa.pub" ] || ! cmp -s "${src_pub_key}" "pmaports-fastboop.rsa.pub"; then
-    unchanged=false
-  fi
+if [ "${#dst_pub_keys[@]}" -ne "${#src_pub_keys[@]}" ]; then
+  unchanged=false
+else
+  for src in "${src_pub_keys[@]}"; do
+    dst="./$(basename "${src}")"
+    if [ ! -f "${dst}" ] || ! cmp -s "${src}" "${dst}"; then
+      unchanged=false
+      break
+    fi
+  done
 fi
 
 if [ "${unchanged}" = true ]; then
@@ -72,12 +84,9 @@ if [ "${unchanged}" = true ]; then
   exit 0
 fi
 
-rm -f aarch64/*.apk aarch64/APKINDEX.tar.gz aarch64/APKINDEX.tar.gz.sig
+rm -f aarch64/*.apk aarch64/APKINDEX.tar.gz aarch64/APKINDEX.tar.gz.sig ./*.pub
 cp -f "${apk_files[@]}" aarch64/
-
-if [ -f "${src_pub_key}" ]; then
-  cp -f "${src_pub_key}" pmaports-fastboop.rsa.pub
-fi
+cp -f "${src_pub_keys[@]}" ./
 
 docker_args=(
   run --rm
@@ -124,8 +133,8 @@ cat > index.html <<'EOF'
 EOF
 
 git add aarch64 index.html
-if [ -f pmaports-fastboop.rsa.pub ]; then
-  git add pmaports-fastboop.rsa.pub
+if compgen -G "*.pub" > /dev/null; then
+  git add ./*.pub
 fi
 
 if git diff --cached --quiet; then
