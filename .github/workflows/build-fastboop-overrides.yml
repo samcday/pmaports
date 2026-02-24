@@ -70,7 +70,31 @@ jobs:
             echo "No expected APK outputs found in $pkg_dir"
             exit 1
           fi
+
           cp -f "${files[@]}" out/aarch64/
+
+          sample_apk="${files[0]}"
+          tmp_keys_dir="$(mktemp -d)"
+          signing_key_pub=""
+
+          for key in "$PMB_WORK"/config_apk_keys/*.pub; do
+            rm -f "${tmp_keys_dir}"/*.pub
+            cp "${key}" "${tmp_keys_dir}/"
+
+            if "$PMB_WORK"/apk.static --keys-dir "${tmp_keys_dir}" verify "${sample_apk}" >/dev/null 2>&1; then
+              signing_key_pub="${key}"
+              break
+            fi
+          done
+
+          rm -rf "${tmp_keys_dir}"
+
+          if [ -z "${signing_key_pub}" ]; then
+            echo "Failed to determine signing key for ${sample_apk}"
+            exit 1
+          fi
+
+          cp -f "${signing_key_pub}" out/aarch64/pmaports-fastboop.rsa.pub
           ls -lh out/aarch64/
 
       - name: Upload APK artifacts

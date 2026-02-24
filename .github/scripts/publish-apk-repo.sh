@@ -28,6 +28,7 @@ fi
 
 shopt -s nullglob
 apk_files=("${SRC_DIR}"/*.apk)
+src_pub_key="${SRC_DIR}/pmaports-fastboop.rsa.pub"
 if [ "${#apk_files[@]}" -eq 0 ]; then
   echo "No APK files found in ${SRC_DIR}"
   exit 1
@@ -60,6 +61,12 @@ else
   done
 fi
 
+if [ -f "${src_pub_key}" ]; then
+  if [ ! -f "pmaports-fastboop.rsa.pub" ] || ! cmp -s "${src_pub_key}" "pmaports-fastboop.rsa.pub"; then
+    unchanged=false
+  fi
+fi
+
 if [ "${unchanged}" = true ]; then
   echo "No APK payload changes to publish"
   exit 0
@@ -67,6 +74,10 @@ fi
 
 rm -f aarch64/*.apk aarch64/APKINDEX.tar.gz aarch64/APKINDEX.tar.gz.sig
 cp -f "${apk_files[@]}" aarch64/
+
+if [ -f "${src_pub_key}" ]; then
+  cp -f "${src_pub_key}" pmaports-fastboop.rsa.pub
+fi
 
 docker_args=(
   run --rm
