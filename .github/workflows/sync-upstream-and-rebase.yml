@@ -1,0 +1,50 @@
+name: Sync Upstream And Rebase
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-and-rebase
+  cancel-in-progress: false
+
+jobs:
+  sync-and-rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream master
+        run: |
+          if ! git remote get-url upstream >/dev/null 2>&1; then
+            git remote add upstream https://gitlab.postmarketos.org/postmarketOS/pmaports.git
+          fi
+          git fetch upstream master
+
+      - name: Update upstream mirror branch
+        run: |
+          git checkout -B upstream-master upstream/master
+          git push --force-with-lease origin upstream-master
+
+      - name: Rebase master on upstream mirror
+        run: |
+          git checkout -B master origin/master
+          if ! git rebase origin/upstream-master; then
+            git rebase --abort || true
+            echo "Rebase failed. Resolve conflicts on master manually."
+            exit 1
+          fi
+          git push --force-with-lease origin master

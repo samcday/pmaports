@@ -1,0 +1,92 @@
+name: Build Fastboop Overrides
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/build-fastboop-overrides.yml
+      - .github/scripts/setup-pmbootstrap.sh
+      - .github/scripts/publish-apk-repo.sh
+      - device/testing/linux-postmarketos-qcom-msm8916/**
+      - device/testing/device-arrow-db410c/**
+      - device/testing/device-samsung-a5/**
+      - device/testing/firmware-samsung-a5/**
+      - device/community/linux-postmarketos-qcom-sdm845/**
+      - device/community/device-oneplus-fajita/**
+      - device/community/device-oneplus-enchilada/**
+
+concurrency:
+  group: build-fastboop-overrides-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    env:
+      APK_REPO: ${{ vars.APK_REPO || 'samcday/pmaports-fastboop-apk' }}
+      APK_REPO_BRANCH: ${{ vars.APK_REPO_BRANCH || 'master' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up pmbootstrap
+        run: bash .github/scripts/setup-pmbootstrap.sh oneplus-fajita phosh
+
+      - name: Build selected override packages
+        run: |
+          python3 "$PMBOOTSTRAP" -y build_init
+          python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force linux-postmarketos-qcom-msm8916
+          python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force device-arrow-db410c
+          python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force device-samsung-a5
+          python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force firmware-samsung-a5
+          python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force linux-postmarketos-qcom-sdm845
+          python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force device-oneplus-fajita
+          python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force device-oneplus-enchilada
+
+      - name: Collect built APKs
+        run: |
+          mkdir -p out/aarch64
+          shopt -s nullglob
+          pkg_dir="$PMB_WORK/packages/edge/aarch64"
+          files=(
+            "$pkg_dir"/linux-postmarketos-qcom-msm8916-*.apk
+            "$pkg_dir"/device-arrow-db410c-*.apk
+            "$pkg_dir"/device-samsung-a5-*.apk
+            "$pkg_dir"/firmware-samsung-a5-*.apk
+            "$pkg_dir"/firmware-samsung-a5-wcnss-nv-*.apk
+            "$pkg_dir"/linux-postmarketos-qcom-sdm845-*.apk
+            "$pkg_dir"/device-oneplus-fajita-*.apk
+            "$pkg_dir"/device-oneplus-enchilada-*.apk
+          )
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No expected APK outputs found in $pkg_dir"
+            exit 1
+          fi
+          cp -f "${files[@]}" out/aarch64/
+          ls -lh out/aarch64/
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fastboop-overrides-aarch64
+          path: out/aarch64/
+
+      - name: Publish to binary APK repo
+        if: github.event_name == 'push'
+        env:
+          APK_REPO_PUSH_TOKEN: ${{ secrets.APK_REPO_PUSH_TOKEN }}
+          APK_REPO_SIGNING_KEY: ${{ secrets.APK_REPO_SIGNING_KEY }}
+        run: |
+          if [ -z "${APK_REPO_PUSH_TOKEN:-}" ]; then
+            echo "APK_REPO_PUSH_TOKEN is not configured; skipping publish"
+            exit 0
+          fi
+          bash .github/scripts/publish-apk-repo.sh out/aarch64
