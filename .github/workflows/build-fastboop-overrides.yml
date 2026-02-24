@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 360
     env:
       APK_REPO: ${{ vars.APK_REPO || 'samcday/pmaports-fastboop-apk' }}
-      APK_REPO_BRANCH: ${{ vars.APK_REPO_BRANCH || 'master' }}
+      APK_REPO_BRANCH: ${{ vars.APK_REPO_BRANCH || 'main' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

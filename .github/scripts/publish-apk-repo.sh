@@ -45,21 +45,27 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 git checkout -B "${APK_REPO_BRANCH}"
 
 mkdir -p aarch64
+dst_apk_files=(aarch64/*.apk)
 
 unchanged=true
-for src in "${apk_files[@]}"; do
-  dst="aarch64/$(basename "${src}")"
-  if [ ! -f "${dst}" ] || ! cmp -s "${src}" "${dst}"; then
-    unchanged=false
-    break
-  fi
-done
+if [ "${#dst_apk_files[@]}" -ne "${#apk_files[@]}" ]; then
+  unchanged=false
+else
+  for src in "${apk_files[@]}"; do
+    dst="aarch64/$(basename "${src}")"
+    if [ ! -f "${dst}" ] || ! cmp -s "${src}" "${dst}"; then
+      unchanged=false
+      break
+    fi
+  done
+fi
 
 if [ "${unchanged}" = true ]; then
   echo "No APK payload changes to publish"
   exit 0
 fi
 
+rm -f aarch64/*.apk aarch64/APKINDEX.tar.gz aarch64/APKINDEX.tar.gz.sig
 cp -f "${apk_files[@]}" aarch64/
 
 docker_args=(
