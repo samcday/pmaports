@@ -19,8 +19,7 @@ This repository is a downstream of postmarketOS `pmaports` with fastboop-specifi
 
 - `.github/workflows/build-fastboop-overrides.yml`
   - path-triggered build for package changes in:
-    - `device/community/linux-postmarketos-qcom-sdm845/**`
-    - `device/community/device-oneplus-fajita/**`
+    - `main/postmarketos-usb-moded/**`
   - builds aarch64 APKs with `pmbootstrap`
   - publishes APK repo content to hosted object storage
   - uploads build artifacts

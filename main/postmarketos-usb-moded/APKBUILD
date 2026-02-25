@@ -1,15 +1,14 @@
 maintainer="Clayton Craft <clayton@craftyguy.net>"
 pkgname=postmarketos-usb-moded
 pkgver=3
-pkgrel=0
-pkgdesc="Meta package for configuring usb-moded on postmarketOS"
+pkgrel=1
+pkgdesc="Neutered usb-moded meta package for fastboop"
 url="https://postmarketos.org"
 arch="noarch"
 license="GPL-3.0-or-later"
 depends="
-	umtprd
-	usb-moded
-	usb-moded-notify
+	!usb-moded
+	!usb-moded-notify
 "
 subpackages="
 	$pkgname-default-profile-charging:charging_default
