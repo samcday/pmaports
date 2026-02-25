@@ -186,4 +186,19 @@ jobs:
         if: github.event_name == 'push'
         env:
           APK_REPO_DOCKER_PLATFORM: linux/arm64/v8
-        run: bash .github/scripts/smoke-check-apk-repo.sh
+        run: |
+          set -euo pipefail
+
+          for attempt in 1 2 3 4 5; do
+            if bash .github/scripts/smoke-check-apk-repo.sh; then
+              exit 0
+            fi
+
+            if [ "${attempt}" -eq 5 ]; then
+              echo "Smoke check failed after ${attempt} attempts"
+              exit 1
+            fi
+
+            echo "Smoke check attempt ${attempt} failed; waiting 20s before retry"
+            sleep 20
+          done

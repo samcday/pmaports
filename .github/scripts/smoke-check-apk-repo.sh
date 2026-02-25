@@ -40,19 +40,26 @@ else
 fi
 
 key_url=""
+key_file=""
 for candidate in "${key_candidates[@]}"; do
-  if curl -fsSL "${candidate}" -o "${workdir}/repo-key.pub"; then
+  candidate_name="$(basename "${candidate}")"
+  if [ -z "${candidate_name}" ] || [ "${candidate_name}" = "/" ]; then
+    candidate_name="pmos.samcday.com.rsa.pub"
+  fi
+
+  if curl -fsSL "${candidate}" -o "${workdir}/${candidate_name}"; then
     key_url="${candidate}"
+    key_file="${candidate_name}"
     break
   fi
 done
 
-if [ -z "${key_url}" ]; then
+if [ -z "${key_url}" ] || [ -z "${key_file}" ]; then
   echo "Failed to download repository key"
   exit 1
 fi
 
-if ! grep -q "BEGIN PUBLIC KEY" "${workdir}/repo-key.pub"; then
+if ! grep -q "BEGIN PUBLIC KEY" "${workdir}/${key_file}"; then
   echo "Downloaded key from ${key_url} does not look like a public key"
   exit 1
 fi
@@ -106,6 +113,7 @@ docker_args=(
   run --rm
   -v "${workdir}:/work:ro"
   -e "FIRST_APK=${first_apk}"
+  -e "REPO_KEY_FILE=${key_file}"
 )
 
 if [ -n "${APK_REPO_DOCKER_PLATFORM}" ]; then
@@ -117,7 +125,7 @@ docker_args+=(
   /bin/sh -euxc '
     apk add --no-cache apk-tools-static
     mkdir -p /keys
-    cp /work/repo-key.pub /keys/
+    cp "/work/${REPO_KEY_FILE}" "/keys/${REPO_KEY_FILE}"
     apk.static --keys-dir /keys verify /work/APKINDEX.tar.gz
     apk.static --keys-dir /keys verify "/work/${FIRST_APK}"
   '
