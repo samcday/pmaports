@@ -104,13 +104,17 @@ jobs:
             cp -f "${key}" out/aarch64/
           done
 
-          primary_key=""
-          for key in "${matching_keys[@]}"; do
-            if [[ "$(basename "${key}")" == pmos@local-* ]]; then
-              primary_key="${key}"
-              break
-            fi
-          done
+          primary_key="${PMB_WORK}/config_apk_keys/pmos.samcday.com.rsa.pub"
+
+          if [ ! -f "${primary_key}" ]; then
+            primary_key=""
+            for key in "${matching_keys[@]}"; do
+              if [[ "$(basename "${key}")" == pmos@local-* ]]; then
+                primary_key="${key}"
+                break
+              fi
+            done
+          fi
 
           if [ -z "${primary_key}" ]; then
             primary_key="${matching_keys[0]}"
