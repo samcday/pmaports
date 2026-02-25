@@ -117,7 +117,7 @@ if [ -n "${APK_REPO_SIGNING_KEY}" ]; then
   fi
 
   mkdir -p "${work_dir}/config_abuild" "${work_dir}/config_apk_keys"
-  install -m 0600 "${key_tmp}" "${work_dir}/config_abuild/${key_name}"
+  install -m 0644 "${key_tmp}" "${work_dir}/config_abuild/${key_name}"
 
   openssl rsa -in "${key_tmp}" -pubout > "${pub_tmp}"
   install -m 0644 "${pub_tmp}" "${work_dir}/config_abuild/${key_name}.pub"
