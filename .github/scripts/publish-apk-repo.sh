@@ -95,7 +95,7 @@ def package_arch(path: str) -> str:
 
     for raw in data.splitlines():
         line = raw.strip()
-        if line.startswith("pkgarch = "):
+        if line.startswith("arch = ") or line.startswith("pkgarch = "):
             return line.split("=", 1)[1].strip()
     return ""
 
