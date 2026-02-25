@@ -64,11 +64,14 @@ if ! grep -q "BEGIN PUBLIC KEY" "${workdir}/${key_file}"; then
   exit 1
 fi
 
-first_apk="$(python3 - "${workdir}/APKINDEX.tar.gz" <<'PY'
+index_scan="$(python3 - "${workdir}/APKINDEX.tar.gz" <<'PY'
 import sys
 import tarfile
 
 index_tar = sys.argv[1]
+
+first_apk = ""
+first_noarch_apk = ""
 
 with tarfile.open(index_tar, "r:gz") as tar:
     source = tar.extractfile("APKINDEX")
@@ -77,6 +80,7 @@ with tarfile.open(index_tar, "r:gz") as tar:
 
     pkg = None
     ver = None
+    arch = None
 
     for line in source.read().decode("utf-8", errors="ignore").splitlines():
         if line.startswith("P:"):
@@ -87,20 +91,51 @@ with tarfile.open(index_tar, "r:gz") as tar:
             ver = line[2:].strip()
             continue
 
+        if line.startswith("A:"):
+            arch = line[2:].strip()
+            continue
+
         if line == "":
             if pkg and ver:
-                print(f"{pkg}-{ver}.apk")
-                raise SystemExit(0)
+                candidate = f"{pkg}-{ver}.apk"
+                if not first_apk:
+                    first_apk = candidate
+                if arch == "noarch" and not first_noarch_apk:
+                    first_noarch_apk = candidate
+
+                if first_apk and first_noarch_apk:
+                    break
             pkg = None
             ver = None
+            arch = None
 
     if pkg and ver:
-        print(f"{pkg}-{ver}.apk")
-        raise SystemExit(0)
+        candidate = f"{pkg}-{ver}.apk"
+        if not first_apk:
+            first_apk = candidate
+        if arch == "noarch" and not first_noarch_apk:
+            first_noarch_apk = candidate
 
-raise SystemExit(1)
+if not first_apk:
+    raise SystemExit(1)
+
+print(f"first_apk={first_apk}")
+print(f"first_noarch_apk={first_noarch_apk}")
 PY
 )"
+
+first_apk=""
+first_noarch_apk=""
+while IFS='=' read -r key value; do
+  case "${key}" in
+    first_apk)
+      first_apk="${value}"
+      ;;
+    first_noarch_apk)
+      first_noarch_apk="${value}"
+      ;;
+  esac
+done <<< "${index_scan}"
 
 if [ -z "${first_apk}" ]; then
   echo "Could not determine an APK filename from ${index_url}"
@@ -109,10 +144,16 @@ fi
 
 curl -fsSL "${index_root}/${first_apk}" -o "${workdir}/${first_apk}"
 
+if [ -n "${first_noarch_apk}" ]; then
+  noarch_root="${index_root%/aarch64}/noarch"
+  curl -fsSL "${noarch_root}/${first_noarch_apk}" -o "${workdir}/${first_noarch_apk}"
+fi
+
 docker_args=(
   run --rm
   -v "${workdir}:/work:ro"
   -e "FIRST_APK=${first_apk}"
+  -e "NOARCH_APK=${first_noarch_apk}"
   -e "REPO_KEY_FILE=${key_file}"
 )
 
@@ -128,6 +169,9 @@ docker_args+=(
     cp "/work/${REPO_KEY_FILE}" "/keys/${REPO_KEY_FILE}"
     apk.static --keys-dir /keys verify /work/APKINDEX.tar.gz
     apk.static --keys-dir /keys verify "/work/${FIRST_APK}"
+    if [ -n "${NOARCH_APK}" ]; then
+      apk.static --keys-dir /keys verify "/work/${NOARCH_APK}"
+    fi
   '
 )
 

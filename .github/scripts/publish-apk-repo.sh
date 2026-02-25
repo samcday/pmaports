@@ -62,9 +62,55 @@ fi
 stage_dir="$(mktemp -d)"
 trap 'rm -rf "${stage_dir}"' EXIT
 
-mkdir -p "${stage_dir}/aarch64" "${stage_dir}/master/aarch64" "${stage_dir}/master"
+mkdir -p "${stage_dir}/aarch64" "${stage_dir}/noarch" "${stage_dir}/master" "${stage_dir}/master/aarch64" "${stage_dir}/master/noarch"
 cp -f "${apk_files[@]}" "${stage_dir}/aarch64/"
 cp -f "${apk_files[@]}" "${stage_dir}/master/aarch64/"
+
+noarch_apks=()
+while IFS= read -r apk_name; do
+  [ -n "${apk_name}" ] || continue
+  noarch_apks+=("${SRC_DIR}/${apk_name}")
+done < <(python3 - "${apk_files[@]}" <<'PY'
+import os
+import sys
+import tarfile
+
+
+def package_arch(path: str) -> str:
+    with tarfile.open(path, "r:*") as tf:
+        pkginfo = None
+        for candidate in (".PKGINFO", "./.PKGINFO"):
+            try:
+                pkginfo = tf.extractfile(candidate)
+            except KeyError:
+                pkginfo = None
+            if pkginfo is not None:
+                break
+
+        if pkginfo is None:
+            return ""
+
+        with pkginfo:
+            data = pkginfo.read().decode("utf-8", errors="ignore")
+
+    for raw in data.splitlines():
+        line = raw.strip()
+        if line.startswith("pkgarch = "):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+for apk_path in sys.argv[1:]:
+    if package_arch(apk_path) == "noarch":
+        print(os.path.basename(apk_path))
+PY
+)
+
+if [ "${#noarch_apks[@]}" -gt 0 ]; then
+  cp -f "${noarch_apks[@]}" "${stage_dir}/noarch/"
+  cp -f "${noarch_apks[@]}" "${stage_dir}/master/noarch/"
+fi
+
 cp -f "${SRC_DIR}/APKINDEX.tar.gz" "${stage_dir}/aarch64/"
 cp -f "${SRC_DIR}/APKINDEX.tar.gz" "${stage_dir}/master/aarch64/"
 
@@ -83,7 +129,9 @@ export AWS_DEFAULT_REGION="${APK_REPO_S3_REGION}"
 aws --endpoint-url "${APK_REPO_S3_ENDPOINT}" s3api head-bucket --bucket "${APK_REPO_BUCKET}" >/dev/null
 
 aws --endpoint-url "${APK_REPO_S3_ENDPOINT}" s3 sync "${stage_dir}/aarch64/" "s3://${APK_REPO_BUCKET}/${prefix}aarch64/" --delete
+aws --endpoint-url "${APK_REPO_S3_ENDPOINT}" s3 sync "${stage_dir}/noarch/" "s3://${APK_REPO_BUCKET}/${prefix}noarch/" --delete
 aws --endpoint-url "${APK_REPO_S3_ENDPOINT}" s3 sync "${stage_dir}/master/aarch64/" "s3://${APK_REPO_BUCKET}/${prefix}master/aarch64/" --delete
+aws --endpoint-url "${APK_REPO_S3_ENDPOINT}" s3 sync "${stage_dir}/master/noarch/" "s3://${APK_REPO_BUCKET}/${prefix}master/noarch/" --delete
 
 for key_file in "${stage_dir}"/*.pub; do
   key_name="$(basename "${key_file}")"
