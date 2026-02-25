@@ -146,9 +146,10 @@ jobs:
 
           docker run --rm \
             -v "${PWD}/out/aarch64:/repo" \
-            -v "${host_key_path}:/signing-key.rsa:ro" \
+            -v "${host_key_path}:/keys/${key_basename}:ro" \
+            -e "KEY_BASENAME=${key_basename}" \
             alpine:3.20 \
-            /bin/sh -euxc 'apk add --no-cache alpine-sdk >/dev/null; cd /repo; apk index --allow-untrusted -o APKINDEX.tar.gz ./*.apk; abuild-sign -k /signing-key.rsa APKINDEX.tar.gz'
+            /bin/sh -euxc 'apk add --no-cache alpine-sdk >/dev/null; cd /repo; apk index --allow-untrusted -o APKINDEX.tar.gz ./*.apk; abuild-sign -k "/keys/${KEY_BASENAME}" APKINDEX.tar.gz'
 
           verify_keys_dir="$(mktemp -d)"
           cp out/aarch64/pmos.samcday.com.rsa.pub "${verify_keys_dir}/"
