@@ -22,7 +22,7 @@ This repository is a downstream of postmarketOS `pmaports` with fastboop-specifi
     - `main/postmarketos-usb-moded/**`
     - `device/testing/linux-postmarketos-qcom-msm8916/**`
     - `device/community/linux-postmarketos-qcom-sdm845/**`
-  - builds aarch64 APKs with `pmbootstrap`
+  - derives a package matrix from changed paths and builds selected APKs with `pmbootstrap` in parallel
   - publishes APK repo content to hosted object storage
   - uploads build artifacts
   - smoke-checks the hosted binary repo endpoint

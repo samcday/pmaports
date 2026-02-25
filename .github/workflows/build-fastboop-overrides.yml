@@ -22,9 +22,173 @@ permissions:
   contents: read
 
 jobs:
-  build-and-publish-check:
+  resolve-build-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.select.outputs.packages }}
+      has_packages: ${{ steps.select.outputs.has_packages }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select packages from changed paths
+        id: select
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          before_sha="${BEFORE_SHA:-}"
+          null_sha="0000000000000000000000000000000000000000"
+
+          if [ "${before_sha}" = "null" ]; then
+            before_sha=""
+          fi
+
+          if [ -n "${before_sha}" ] && [ "${before_sha}" != "${null_sha}" ] && git cat-file -e "${before_sha}^{commit}" 2>/dev/null; then
+            changed_paths="$(git diff --name-only "${before_sha}" "${GITHUB_SHA}")"
+          else
+            changed_paths="$(git show --pretty='' --name-only "${GITHUB_SHA}")"
+          fi
+
+          if [ -z "${changed_paths}" ]; then
+            echo "No changed paths detected from git history; falling back to full package set."
+          else
+            printf 'Changed paths:\n%s\n' "${changed_paths}"
+          fi
+
+          CHANGED_PATHS="${changed_paths}" python3 - <<'PY' > matrix.out
+          import json
+          import os
+
+          paths = [line.strip() for line in os.environ.get("CHANGED_PATHS", "").splitlines() if line.strip()]
+
+          all_packages = [
+              "linux-postmarketos-qcom-msm8916",
+              "linux-postmarketos-qcom-sdm845",
+              "postmarketos-usb-moded",
+          ]
+
+          selected = []
+
+
+          def add(pkg: str) -> None:
+              if pkg not in selected:
+                  selected.append(pkg)
+
+
+          for path in paths:
+              if path in {
+                  ".github/workflows/build-fastboop-overrides.yml",
+                  ".github/scripts/setup-pmbootstrap.sh",
+                  ".github/scripts/publish-apk-repo.sh",
+                  ".github/scripts/smoke-check-apk-repo.sh",
+              }:
+                  for pkg in all_packages:
+                      add(pkg)
+
+              if path.startswith("device/testing/linux-postmarketos-qcom-msm8916/"):
+                  add("linux-postmarketos-qcom-msm8916")
+
+              if path.startswith("device/community/linux-postmarketos-qcom-sdm845/"):
+                  add("linux-postmarketos-qcom-sdm845")
+
+              if path.startswith("main/postmarketos-usb-moded/"):
+                  add("postmarketos-usb-moded")
+
+          if not selected:
+              selected = all_packages.copy()
+
+          print(f"packages={json.dumps(selected)}")
+          print("has_packages=true" if selected else "has_packages=false")
+          PY
+
+          cat matrix.out
+          cat matrix.out >> "${GITHUB_OUTPUT}"
+
+  build-overrides:
+    needs: resolve-build-matrix
+    if: needs.resolve-build-matrix.outputs.has_packages == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJson(needs.resolve-build-matrix.outputs.packages) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up pmbootstrap
+        env:
+          APK_REPO_SIGNING_KEY: ${{ secrets.APK_REPO_SIGNING_KEY }}
+        run: bash .github/scripts/setup-pmbootstrap.sh oneplus-fajita phosh
+
+      - name: Build selected override package
+        run: |
+          set -euo pipefail
+          python3 "$PMBOOTSTRAP" -y build_init
+          python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force "${{ matrix.package }}"
+
+      - name: Collect built APKs
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          artifact_dir="out/${{ matrix.package }}"
+          mkdir -p "${artifact_dir}"
+
+          patterns=()
+
+          case "${{ matrix.package }}" in
+            linux-postmarketos-qcom-msm8916)
+              patterns+=("$PMB_WORK/packages/edge/aarch64/linux-postmarketos-qcom-msm8916-*.apk")
+              ;;
+            linux-postmarketos-qcom-sdm845)
+              patterns+=("$PMB_WORK/packages/edge/aarch64/linux-postmarketos-qcom-sdm845-*.apk")
+              ;;
+            postmarketos-usb-moded)
+              patterns+=("$PMB_WORK/packages/edge/noarch/postmarketos-usb-moded-*.apk")
+              patterns+=("$PMB_WORK/packages/edge/aarch64/postmarketos-usb-moded-*.apk")
+              ;;
+            *)
+              echo "Unsupported package selector: ${{ matrix.package }}"
+              exit 1
+              ;;
+          esac
+
+          files=()
+          for pattern in "${patterns[@]}"; do
+            for file in ${pattern}; do
+              files+=("${file}")
+            done
+          done
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No APK outputs found for package ${{ matrix.package }}"
+            exit 1
+          fi
+
+          cp -f "${files[@]}" "${artifact_dir}/"
+          ls -lh "${artifact_dir}/"
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fastboop-overrides-${{ matrix.package }}
+          path: out/${{ matrix.package }}/
+
+  publish-and-smoke-check:
+    needs:
+      - resolve-build-matrix
+      - build-overrides
+    if: needs.resolve-build-matrix.outputs.has_packages == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
     env:
       APK_REPO_BASE_URL: ${{ vars.APK_REPO_BASE_URL || 'https://pmos.samcday.com' }}
       APK_REPO_KEY_URL: ${{ vars.APK_REPO_KEY_URL || 'https://pmos.samcday.com/pmos.samcday.com.rsa.pub' }}
@@ -37,119 +201,70 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up pmbootstrap
+      - name: Download built package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fastboop-overrides-*
+          path: out/aarch64/
+          merge-multiple: true
+
+      - name: Validate downloaded payload
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apk_files=(out/aarch64/*.apk)
+          if [ "${#apk_files[@]}" -eq 0 ]; then
+            echo "No APKs downloaded from build artifacts"
+            exit 1
+          fi
+          ls -lh out/aarch64/
+
+      - name: Prepare signing key and canonical public key
         env:
           APK_REPO_SIGNING_KEY: ${{ secrets.APK_REPO_SIGNING_KEY }}
-        run: bash .github/scripts/setup-pmbootstrap.sh oneplus-fajita phosh
-
-      - name: Build selected override packages
         run: |
-          python3 "$PMBOOTSTRAP" -y build_init
-          python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force linux-postmarketos-qcom-msm8916
-          python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force linux-postmarketos-qcom-sdm845
-          python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force postmarketos-usb-moded
+          set -euo pipefail
 
-      - name: Collect built APKs
-        run: |
-          mkdir -p out/aarch64
-          shopt -s nullglob
-          files=()
-
-          for pkg_dir in "$PMB_WORK/packages/edge/aarch64" "$PMB_WORK/packages/edge/noarch"; do
-            files+=(
-              "$pkg_dir"/linux-postmarketos-qcom-msm8916-*.apk
-              "$pkg_dir"/linux-postmarketos-qcom-sdm845-*.apk
-              "$pkg_dir"/postmarketos-usb-moded-*.apk
-            )
-          done
-
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No expected APK outputs found for linux-postmarketos-qcom-{msm8916,sdm845} and postmarketos-usb-moded"
+          if [ -z "${APK_REPO_SIGNING_KEY}" ]; then
+            echo "APK_REPO_SIGNING_KEY is not set"
             exit 1
           fi
 
-          cp -f "${files[@]}" out/aarch64/
+          signing_key_path="${RUNNER_TEMP}/pmos.samcday.com.rsa"
+          printf "%s\n" "${APK_REPO_SIGNING_KEY}" > "${signing_key_path}"
 
-          tmp_keys_dir="$(mktemp -d)"
-          matching_keys=()
-
-          for key in "$PMB_WORK"/config_apk_keys/*.pub; do
-            rm -f "${tmp_keys_dir}"/*.pub
-            cp "${key}" "${tmp_keys_dir}/"
-
-            for apk in "${files[@]}"; do
-              if "$PMB_WORK"/apk.static --keys-dir "${tmp_keys_dir}" verify "${apk}" >/dev/null 2>&1; then
-                matching_keys+=("${key}")
-                break
-              fi
-            done
-          done
-
-          if [ "${#matching_keys[@]}" -eq 0 ]; then
-            echo "Failed to determine package signing key(s)"
-            rm -rf "${tmp_keys_dir}"
+          if ! grep -q "PRIVATE KEY" "${signing_key_path}"; then
+            echo "APK_REPO_SIGNING_KEY is not a private key"
             exit 1
           fi
 
-          for key in "${matching_keys[@]}"; do
-            cp -f "${key}" out/aarch64/
-          done
-
-          primary_key="${PMB_WORK}/config_apk_keys/pmos.samcday.com.rsa.pub"
-
-          if [ ! -f "${primary_key}" ]; then
-            primary_key=""
-            for key in "${matching_keys[@]}"; do
-              if [[ "$(basename "${key}")" == pmos@local-* ]]; then
-                primary_key="${key}"
-                break
-              fi
-            done
-          fi
-
-          if [ -z "${primary_key}" ]; then
-            primary_key="${matching_keys[0]}"
-          fi
-
-          rm -rf "${tmp_keys_dir}"
-
-          cp -f "${primary_key}" out/aarch64/pmos.samcday.com.rsa.pub
-          ls -lh out/aarch64/
+          chmod 0600 "${signing_key_path}"
+          openssl rsa -in "${signing_key_path}" -pubout > out/aarch64/pmos.samcday.com.rsa.pub
+          echo "APK_REPO_SIGNING_KEY_PATH=${signing_key_path}" >> "${GITHUB_ENV}"
 
       - name: Generate signed APKINDEX
         run: |
           set -euo pipefail
 
-          packager_privkey="$(awk -F'"' '/^PACKAGER_PRIVKEY=/{print $2}' "${PMB_WORK}/config_abuild/abuild.conf")"
-
-          if [ -z "${packager_privkey}" ]; then
-            echo "Failed to resolve PACKAGER_PRIVKEY"
-            exit 1
-          fi
-
-          key_basename="$(basename "${packager_privkey}")"
-          host_key_path="${PMB_WORK}/config_abuild/${key_basename}"
-
-          if [ ! -f "${host_key_path}" ]; then
-            echo "Signing key not found: ${host_key_path}"
-            exit 1
-          fi
-
           docker run --rm \
             -v "${PWD}/out/aarch64:/repo" \
-            -v "${host_key_path}:/keys/${key_basename}:ro" \
-            -e "KEY_BASENAME=${key_basename}" \
+            -v "${APK_REPO_SIGNING_KEY_PATH}:/keys/pmos.samcday.com.rsa:ro" \
             alpine:3.20 \
-            /bin/sh -euxc 'apk add --no-cache alpine-sdk >/dev/null; cd /repo; apk index --allow-untrusted -o APKINDEX.tar.gz ./*.apk; abuild-sign -k "/keys/${KEY_BASENAME}" APKINDEX.tar.gz'
+            /bin/sh -euxc 'apk add --no-cache alpine-sdk >/dev/null; cd /repo; apk index --allow-untrusted -o APKINDEX.tar.gz ./*.apk; abuild-sign -k /keys/pmos.samcday.com.rsa APKINDEX.tar.gz'
 
-          openssl rsa -in "${host_key_path}" -pubout > out/aarch64/pmos.samcday.com.rsa.pub
+      - name: Verify APKINDEX and APK signatures
+        run: |
+          set -euo pipefail
 
           verify_keys_dir="$(mktemp -d)"
           cp out/aarch64/pmos.samcday.com.rsa.pub "${verify_keys_dir}/"
-          "${PMB_WORK}/apk.static" --keys-dir "${verify_keys_dir}" verify out/aarch64/APKINDEX.tar.gz
-          for apk in out/aarch64/*.apk; do
-            "${PMB_WORK}/apk.static" --keys-dir "${verify_keys_dir}" verify "${apk}"
-          done
+
+          docker run --rm \
+            -v "${PWD}/out/aarch64:/repo:ro" \
+            -v "${verify_keys_dir}:/keys:ro" \
+            alpine:3.20 \
+            /bin/sh -euxc 'apk add --no-cache apk-tools-static >/dev/null; apk.static --keys-dir /keys verify /repo/APKINDEX.tar.gz; for apk in /repo/*.apk; do apk.static --keys-dir /keys verify "$apk"; done'
+
           rm -rf "${verify_keys_dir}"
 
       - name: Upload APK artifacts
