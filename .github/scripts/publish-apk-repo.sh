@@ -2,145 +2,93 @@
 set -euo pipefail
 
 SRC_DIR="${1:?usage: publish-apk-repo.sh <apk-dir>}"
-APK_REPO="${APK_REPO:-}"
-APK_REPO_BRANCH="${APK_REPO_BRANCH:-main}"
-APK_REPO_PUSH_TOKEN="${APK_REPO_PUSH_TOKEN:-}"
-APK_REPO_SIGNING_KEY="${APK_REPO_SIGNING_KEY:-}"
-APK_REPO_DOCKER_PLATFORM="${APK_REPO_DOCKER_PLATFORM:-}"
-SOURCE_REF="${GITHUB_REPOSITORY:-local/pmaports}@${GITHUB_SHA:-unknown}"
+APK_REPO_BUCKET="${APK_REPO_BUCKET:-}"
+APK_REPO_S3_ENDPOINT="${APK_REPO_S3_ENDPOINT:-}"
+APK_REPO_S3_REGION="${APK_REPO_S3_REGION:-eu-central-003}"
+APK_REPO_S3_PREFIX="${APK_REPO_S3_PREFIX:-}"
+APK_REPO_ACCESS_KEY_ID="${APK_REPO_ACCESS_KEY_ID:-${AWS_ACCESS_KEY_ID:-}}"
+APK_REPO_SECRET_ACCESS_KEY="${APK_REPO_SECRET_ACCESS_KEY:-${AWS_SECRET_ACCESS_KEY:-}}"
 
 if [ ! -d "${SRC_DIR}" ]; then
   echo "APK source directory does not exist: ${SRC_DIR}"
   exit 1
 fi
 
-SRC_DIR="$(realpath "${SRC_DIR}")"
-
-if [ -z "${APK_REPO}" ]; then
-  echo "APK_REPO is not set"
+if [ -z "${APK_REPO_BUCKET}" ]; then
+  echo "APK_REPO_BUCKET is not set"
   exit 1
 fi
 
-if [ -z "${APK_REPO_PUSH_TOKEN}" ]; then
-  echo "APK_REPO_PUSH_TOKEN is not set"
+if [ -z "${APK_REPO_S3_ENDPOINT}" ]; then
+  echo "APK_REPO_S3_ENDPOINT is not set"
+  exit 1
+fi
+
+if [ -z "${APK_REPO_ACCESS_KEY_ID}" ] || [ -z "${APK_REPO_SECRET_ACCESS_KEY}" ]; then
+  echo "APK repo S3 credentials are not set"
   exit 1
 fi
 
 shopt -s nullglob
 apk_files=("${SRC_DIR}"/*.apk)
-src_pub_keys=("${SRC_DIR}"/*.pub)
+pub_keys=("${SRC_DIR}"/*.pub)
+
 if [ "${#apk_files[@]}" -eq 0 ]; then
   echo "No APK files found in ${SRC_DIR}"
   exit 1
 fi
 
-if [ "${#src_pub_keys[@]}" -eq 0 ]; then
-  echo "No .pub key files found in ${SRC_DIR}"
+if [ ! -f "${SRC_DIR}/APKINDEX.tar.gz" ]; then
+  echo "Missing APKINDEX.tar.gz in ${SRC_DIR}"
   exit 1
 fi
 
-workdir="$(mktemp -d)"
-trap 'rm -rf "${workdir}"' EXIT
-
-git clone "https://x-access-token:${APK_REPO_PUSH_TOKEN}@github.com/${APK_REPO}.git" "${workdir}/repo"
-cd "${workdir}/repo"
-
-git config user.name "github-actions[bot]"
-git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-git checkout -B "${APK_REPO_BRANCH}"
-
-mkdir -p aarch64
-dst_apk_files=(aarch64/*.apk)
-dst_pub_keys=(./*.pub)
-
-unchanged=true
-if [ "${#dst_apk_files[@]}" -ne "${#apk_files[@]}" ]; then
-  unchanged=false
-else
-  for src in "${apk_files[@]}"; do
-    dst="aarch64/$(basename "${src}")"
-    if [ ! -f "${dst}" ] || ! cmp -s "${src}" "${dst}"; then
-      unchanged=false
-      break
-    fi
-  done
+if [ ! -f "${SRC_DIR}/pmos.samcday.com.rsa.pub" ]; then
+  echo "Missing canonical public key in ${SRC_DIR}"
+  exit 1
 fi
 
-if [ "${#dst_pub_keys[@]}" -ne "${#src_pub_keys[@]}" ]; then
-  unchanged=false
-else
-  for src in "${src_pub_keys[@]}"; do
-    dst="./$(basename "${src}")"
-    if [ ! -f "${dst}" ] || ! cmp -s "${src}" "${dst}"; then
-      unchanged=false
-      break
-    fi
-  done
+if [ "${#pub_keys[@]}" -eq 0 ]; then
+  echo "No .pub keys found in ${SRC_DIR}"
+  exit 1
 fi
 
-if [ "${unchanged}" = true ]; then
-  echo "No APK payload changes to publish"
-  exit 0
+prefix="${APK_REPO_S3_PREFIX#/}"
+prefix="${prefix%/}"
+if [ -n "${prefix}" ]; then
+  prefix="${prefix}/"
 fi
 
-rm -f aarch64/*.apk aarch64/APKINDEX.tar.gz aarch64/APKINDEX.tar.gz.sig ./*.pub
-cp -f "${apk_files[@]}" aarch64/
-cp -f "${src_pub_keys[@]}" ./
+stage_dir="$(mktemp -d)"
+trap 'rm -rf "${stage_dir}"' EXIT
 
-docker_args=(
-  run --rm
-  -v "${PWD}:/repo"
-  -e APK_REPO_SIGNING_KEY="${APK_REPO_SIGNING_KEY}"
-)
-if [ -n "${APK_REPO_DOCKER_PLATFORM}" ]; then
-  docker_args+=(--platform "${APK_REPO_DOCKER_PLATFORM}")
+mkdir -p "${stage_dir}/aarch64" "${stage_dir}/master/aarch64" "${stage_dir}/master"
+cp -f "${apk_files[@]}" "${stage_dir}/aarch64/"
+cp -f "${apk_files[@]}" "${stage_dir}/master/aarch64/"
+cp -f "${SRC_DIR}/APKINDEX.tar.gz" "${stage_dir}/aarch64/"
+cp -f "${SRC_DIR}/APKINDEX.tar.gz" "${stage_dir}/master/aarch64/"
+
+if [ -f "${SRC_DIR}/APKINDEX.tar.gz.sig" ]; then
+  cp -f "${SRC_DIR}/APKINDEX.tar.gz.sig" "${stage_dir}/aarch64/"
+  cp -f "${SRC_DIR}/APKINDEX.tar.gz.sig" "${stage_dir}/master/aarch64/"
 fi
 
-docker_args+=(
-  alpine:3.20
-  /bin/sh -euxc '
-    apk add --no-cache alpine-sdk openssl
-    cd /repo/aarch64
-    apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
-    if [ -n "${APK_REPO_SIGNING_KEY}" ]; then
-      printf "%s\n" "${APK_REPO_SIGNING_KEY}" > /tmp/repo.rsa
-      chmod 600 /tmp/repo.rsa
-      abuild-sign -k /tmp/repo.rsa APKINDEX.tar.gz
-      openssl rsa -in /tmp/repo.rsa -pubout > /repo/pmaports-fastboop.rsa.pub
-    fi
-  '
-)
+cp -f "${pub_keys[@]}" "${stage_dir}/"
+cp -f "${pub_keys[@]}" "${stage_dir}/master/"
 
-docker "${docker_args[@]}"
+export AWS_ACCESS_KEY_ID="${APK_REPO_ACCESS_KEY_ID}"
+export AWS_SECRET_ACCESS_KEY="${APK_REPO_SECRET_ACCESS_KEY}"
+export AWS_DEFAULT_REGION="${APK_REPO_S3_REGION}"
 
-cat > index.html <<'EOF'
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>pmaports-fastboop-apk</title>
-</head>
-<body>
-  <h1>pmaports-fastboop-apk</h1>
-  <p>Aarch64 APK repo for fastboop-related downstream pmaports builds.</p>
-  <ul>
-    <li><a href="aarch64/">aarch64/</a></li>
-  </ul>
-</body>
-</html>
-EOF
+aws --endpoint-url "${APK_REPO_S3_ENDPOINT}" s3api head-bucket --bucket "${APK_REPO_BUCKET}" >/dev/null
 
-git add aarch64 index.html
-if compgen -G "*.pub" > /dev/null; then
-  git add ./*.pub
-fi
+aws --endpoint-url "${APK_REPO_S3_ENDPOINT}" s3 sync "${stage_dir}/aarch64/" "s3://${APK_REPO_BUCKET}/${prefix}aarch64/" --delete
+aws --endpoint-url "${APK_REPO_S3_ENDPOINT}" s3 sync "${stage_dir}/master/aarch64/" "s3://${APK_REPO_BUCKET}/${prefix}master/aarch64/" --delete
 
-if git diff --cached --quiet; then
-  echo "No package repository changes to publish"
-  exit 0
-fi
+for key_file in "${stage_dir}"/*.pub; do
+  key_name="$(basename "${key_file}")"
+  aws --endpoint-url "${APK_REPO_S3_ENDPOINT}" s3 cp "${key_file}" "s3://${APK_REPO_BUCKET}/${prefix}${key_name}"
+  aws --endpoint-url "${APK_REPO_S3_ENDPOINT}" s3 cp "${key_file}" "s3://${APK_REPO_BUCKET}/${prefix}master/${key_name}"
+done
 
-git commit -m "publish aarch64 packages from ${SOURCE_REF}"
-git push origin "${APK_REPO_BRANCH}"
+echo "Published APK repo payload to s3://${APK_REPO_BUCKET}/${prefix}"

@@ -9,6 +9,7 @@ on:
       - .github/workflows/build-fastboop-overrides.yml
       - .github/scripts/setup-pmbootstrap.sh
       - .github/scripts/publish-apk-repo.sh
+      - .github/scripts/smoke-check-apk-repo.sh
       - device/testing/linux-postmarketos-qcom-msm8916/**
       - device/testing/device-arrow-db410c/**
       - device/testing/device-samsung-a5/**
@@ -25,12 +26,15 @@ permissions:
   contents: read
 
 jobs:
-  build-and-publish:
+  build-and-publish-check:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     env:
-      APK_REPO: ${{ vars.APK_REPO || 'samcday/pmaports-fastboop-apk' }}
-      APK_REPO_BRANCH: ${{ vars.APK_REPO_BRANCH || 'main' }}
+      APK_REPO_BASE_URL: ${{ vars.APK_REPO_BASE_URL || 'https://pmos.samcday.com' }}
+      APK_REPO_KEY_URL: ${{ vars.APK_REPO_KEY_URL || 'https://pmos.samcday.com/pmos.samcday.com.rsa.pub' }}
+      APK_REPO_BUCKET: ${{ vars.APK_REPO_BUCKET || 'samcday-pmos' }}
+      APK_REPO_S3_ENDPOINT: ${{ vars.APK_REPO_S3_ENDPOINT || 'https://s3.eu-central-003.backblazeb2.com' }}
+      APK_REPO_S3_REGION: ${{ vars.APK_REPO_S3_REGION || 'eu-central-003' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,6 +42,8 @@ jobs:
           fetch-depth: 0
 
       - name: Set up pmbootstrap
+        env:
+          APK_REPO_SIGNING_KEY: ${{ secrets.APK_REPO_SIGNING_KEY }}
         run: bash .github/scripts/setup-pmbootstrap.sh oneplus-fajita phosh
 
       - name: Build selected override packages
@@ -112,8 +118,41 @@ jobs:
 
           rm -rf "${tmp_keys_dir}"
 
-          cp -f "${primary_key}" out/aarch64/pmaports-fastboop.rsa.pub
+          cp -f "${primary_key}" out/aarch64/pmos.samcday.com.rsa.pub
           ls -lh out/aarch64/
+
+      - name: Generate signed APKINDEX
+        run: |
+          set -euo pipefail
+
+          packager_privkey="$(awk -F'"' '/^PACKAGER_PRIVKEY=/{print $2}' "${PMB_WORK}/config_abuild/abuild.conf")"
+
+          if [ -z "${packager_privkey}" ]; then
+            echo "Failed to resolve PACKAGER_PRIVKEY"
+            exit 1
+          fi
+
+          key_basename="$(basename "${packager_privkey}")"
+          host_key_path="${PMB_WORK}/config_abuild/${key_basename}"
+
+          if [ ! -f "${host_key_path}" ]; then
+            echo "Signing key not found: ${host_key_path}"
+            exit 1
+          fi
+
+          docker run --rm \
+            -v "${PWD}/out/aarch64:/repo" \
+            -v "${host_key_path}:/signing-key.rsa:ro" \
+            alpine:3.20 \
+            /bin/sh -euxc 'apk add --no-cache alpine-sdk >/dev/null; cd /repo; apk index --allow-untrusted -o APKINDEX.tar.gz ./*.apk; abuild-sign -k /signing-key.rsa APKINDEX.tar.gz'
+
+          verify_keys_dir="$(mktemp -d)"
+          cp out/aarch64/pmos.samcday.com.rsa.pub "${verify_keys_dir}/"
+          "${PMB_WORK}/apk.static" --keys-dir "${verify_keys_dir}" verify out/aarch64/APKINDEX.tar.gz
+          for apk in out/aarch64/*.apk; do
+            "${PMB_WORK}/apk.static" --keys-dir "${verify_keys_dir}" verify "${apk}"
+          done
+          rm -rf "${verify_keys_dir}"
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
@@ -121,14 +160,23 @@ jobs:
           name: fastboop-overrides-aarch64
           path: out/aarch64/
 
-      - name: Publish to binary APK repo
+      - name: Install AWS CLI
+        if: github.event_name == 'push'
+        run: |
+          if ! command -v aws >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y awscli
+          fi
+
+      - name: Publish hosted APK repo
         if: github.event_name == 'push'
         env:
-          APK_REPO_PUSH_TOKEN: ${{ secrets.APK_REPO_PUSH_TOKEN }}
-          APK_REPO_SIGNING_KEY: ${{ secrets.APK_REPO_SIGNING_KEY }}
-        run: |
-          if [ -z "${APK_REPO_PUSH_TOKEN:-}" ]; then
-            echo "APK_REPO_PUSH_TOKEN is not configured; skipping publish"
-            exit 0
-          fi
-          bash .github/scripts/publish-apk-repo.sh out/aarch64
+          APK_REPO_ACCESS_KEY_ID: ${{ secrets.APK_REPO_ACCESS_KEY_ID }}
+          APK_REPO_SECRET_ACCESS_KEY: ${{ secrets.APK_REPO_SECRET_ACCESS_KEY }}
+        run: bash .github/scripts/publish-apk-repo.sh out/aarch64
+
+      - name: Smoke check hosted APK repo
+        if: github.event_name == 'push'
+        env:
+          APK_REPO_DOCKER_PLATFORM: linux/arm64/v8
+        run: bash .github/scripts/smoke-check-apk-repo.sh
