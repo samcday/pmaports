@@ -151,6 +151,8 @@ jobs:
             alpine:3.20 \
             /bin/sh -euxc 'apk add --no-cache alpine-sdk >/dev/null; cd /repo; apk index --allow-untrusted -o APKINDEX.tar.gz ./*.apk; abuild-sign -k "/keys/${KEY_BASENAME}" APKINDEX.tar.gz'
 
+          openssl rsa -in "${host_key_path}" -pubout > out/aarch64/pmos.samcday.com.rsa.pub
+
           verify_keys_dir="$(mktemp -d)"
           cp out/aarch64/pmos.samcday.com.rsa.pub "${verify_keys_dir}/"
           "${PMB_WORK}/apk.static" --keys-dir "${verify_keys_dir}" verify out/aarch64/APKINDEX.tar.gz
