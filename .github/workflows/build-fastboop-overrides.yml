@@ -11,6 +11,8 @@ on:
       - .github/scripts/publish-apk-repo.sh
       - .github/scripts/smoke-check-apk-repo.sh
       - main/postmarketos-usb-moded/**
+      - device/testing/linux-postmarketos-qcom-msm8916/**
+      - device/community/linux-postmarketos-qcom-sdm845/**
 
 concurrency:
   group: build-fastboop-overrides-${{ github.ref }}
@@ -43,6 +45,8 @@ jobs:
       - name: Build selected override packages
         run: |
           python3 "$PMBOOTSTRAP" -y build_init
+          python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force linux-postmarketos-qcom-msm8916
+          python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force linux-postmarketos-qcom-sdm845
           python3 "$PMBOOTSTRAP" -y --details-to-stdout build --arch aarch64 --strict --force postmarketos-usb-moded
 
       - name: Collect built APKs
@@ -53,12 +57,14 @@ jobs:
 
           for pkg_dir in "$PMB_WORK/packages/edge/aarch64" "$PMB_WORK/packages/edge/noarch"; do
             files+=(
+              "$pkg_dir"/linux-postmarketos-qcom-msm8916-*.apk
+              "$pkg_dir"/linux-postmarketos-qcom-sdm845-*.apk
               "$pkg_dir"/postmarketos-usb-moded-*.apk
             )
           done
 
           if [ "${#files[@]}" -eq 0 ]; then
-            echo "No expected APK outputs found for postmarketos-usb-moded"
+            echo "No expected APK outputs found for linux-postmarketos-qcom-{msm8916,sdm845} and postmarketos-usb-moded"
             exit 1
           fi
 
